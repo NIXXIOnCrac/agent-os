@@ -1,0 +1,62 @@
+name: Windows Installer
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'desktop/**'
+      - 'installer/**'
+      - '.github/workflows/windows-installer.yml'
+      - 'apps/web/**'
+      - 'backend/**'
+permissions:
+  contents: read
+jobs:
+  windows-installer:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build self-contained web frontend
+        shell: pwsh
+        working-directory: apps/web
+        env:
+          NEXT_PUBLIC_AGENTOS_API_URL: ''
+        run: |
+          npm install
+          npm run typecheck
+          npm run build
+          if (!(Test-Path 'out/index.html')) { throw 'Static export missing' }
+      - name: Test backend and install desktop dependencies
+        shell: pwsh
+        run: |
+          python -m pip install -e './backend[dev]'
+          python -m pip install 'pyinstaller>=6,<7' 'pywebview>=5,<7'
+          python -m pytest -q backend/tests
+      - name: Build native Windows executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --windowed --onedir --name AgentOS --paths backend --collect-all webview --add-data 'apps/web/out;frontend' desktop/launcher.py
+          if (!(Test-Path 'dist/AgentOS/AgentOS.exe')) { throw 'App executable missing' }
+      - name: Build Windows setup installer
+        shell: pwsh
+        run: |
+          $compiler = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Inno Setup 6\ISCC.exe'
+          if (!(Test-Path $compiler)) {
+            choco install innosetup --yes --no-progress
+          }
+          if (!(Test-Path $compiler)) { throw 'Inno Setup compiler unavailable' }
+          & $compiler 'installer/AgentOS.iss'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path 'release/AgentOS-Setup-0.1.0-Windows.exe')) { throw 'Installer missing' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentOS-Windows-Installer-v0.1.0
+          path: release/AgentOS-Setup-0.1.0-Windows.exe
+          if-no-files-found: error
+          retention-days: 30
